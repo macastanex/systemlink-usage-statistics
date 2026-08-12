@@ -80,10 +80,13 @@ export class SystemLinkContextService {
       const payload = (await response.json()) as Record<string, unknown>;
       const workspaces = payload['workspaces'];
       if (!Array.isArray(workspaces)) return null;
-      // Case-insensitive match so URL capitalisation doesn't matter
+      console.debug('[SystemLinkContext] available workspaces:', JSON.stringify(workspaces));
       const lower = name.toLowerCase();
-      const match = (workspaces as Record<string, unknown>[]).find(
-        w => String(w['name']).toLowerCase() === lower,
+      // Match on any string field that could carry the workspace name
+      const match = (workspaces as Record<string, unknown>[]).find(w =>
+        ['name', 'displayName', 'alias', 'mappedName'].some(
+          key => typeof w[key] === 'string' && (w[key] as string).toLowerCase() === lower,
+        ),
       );
       const id = match ? String(match['id']) : null;
       console.debug('[SystemLinkContext] workspace ID resolved:', id, 'for name:', name);
