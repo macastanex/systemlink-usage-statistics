@@ -1,0 +1,13 @@
+{
+  "package": "systemlink-usage-statistics",
+  "version": "0.1.0",
+  "displayName": "SystemLink Usage Statistics",
+  "description": "Real-time usage counts for core SystemLink services in the active instance.",
+  "section": "Monitoring",
+  "maintainer": "Mike Castaneda <mike.castaneda@emerson.com>",
+  "license": "MIT",
+  "xbPlugin": "webapp",
+  "iconFile": "icon.svg",
+  "buildDir": "dist/systemlink-usage-statistics/browser",
+  "buildCommand": "npm run build"
+}

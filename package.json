@@ -1,0 +1,40 @@
+{
+  "name": "systemlink-usage-statistics",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Systemlink Usage Statistics hosted Angular webapp for SystemLink.",
+  "scripts": {
+    "start": "ng serve --host 0.0.0.0",
+    "build": "ng build",
+    "pack:nipkg": "slcli webapp pack --config nipkg.config.json --output dist/systemlink-usage-statistics.nipkg",
+    "publish:webapp": "slcli webapp publish dist/systemlink-usage-statistics.nipkg --id eea94928-a686-4fb4-9d6d-2468f21b60b9",
+    "publish:demo": "npm run build && npm run pack:nipkg && npm run publish:webapp"
+  },
+  "dependencies": {
+    "@angular/common": "^20.3.26",
+    "@angular/compiler": "^20.3.26",
+    "@angular/core": "^20.3.26",
+    "@angular/forms": "^20.3.26",
+    "@angular/platform-browser": "^20.3.26",
+    "@angular/router": "^20.3.26",
+    "@ni/nimble-angular": "~33.4.4",
+    "@ni/nimble-components": "~35.12.3",
+    "@ni/ok-angular": "2.5.0",
+    "@ni/systemlink-clients-ts": "3.0.2",
+    "@ni/unit-format": "^1.0.5",
+    "lightweight-charts": "^5.2.0",
+    "rxjs": "~7.8.2",
+    "tslib": "^2.8.1",
+    "zone.js": "~0.15.1"
+  },
+  "devDependencies": {
+    "@angular/build": "^20.3.32",
+    "@angular/cli": "^20.3.26",
+    "@angular/compiler-cli": "^20.3.26",
+    "@angular/localize": "^20.3.26",
+    "typescript": "~5.9.3"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
