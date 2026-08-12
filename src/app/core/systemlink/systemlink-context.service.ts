@@ -73,7 +73,7 @@ export class SystemLinkContextService {
     try {
       const name = this.extractWorkspaceName();
       const response = await fetch(
-        this.buildApiUrl('/niuser/v1/workspaces'),
+        this.buildApiUrl('/niuser/v1/workspaces?take=5000'),
         this.buildRequestInit({ method: 'GET' }),
       );
       if (!response.ok) return null;
