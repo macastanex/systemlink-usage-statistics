@@ -40,26 +40,32 @@ export class SystemLinkContextService {
 
   // Resolves the workspace ID matching the webapp's deployed workspace (from URL path).
   resolveWorkspaceId(): Promise<string | null> {
+    // Don't cache null — if lookup failed, retry on next call
     if (!this.workspaceIdCache) {
-      this.workspaceIdCache = this.fetchWorkspaceId();
+      const p = this.fetchWorkspaceId();
+      p.then(id => { if (id) this.workspaceIdCache = p; });
     }
-    return this.workspaceIdCache;
+    return this.workspaceIdCache ?? this.fetchWorkspaceId();
   }
 
   private extractWorkspaceName(): string {
     try {
-      // Workspace name lives in the PARENT page URL: /webapps/app/{WorkspaceName}/{AppName}/
-      const pathname = window.parent !== window
-        ? window.parent.location.pathname
-        : window.location.pathname;
-      const parts = pathname.split('/').filter(Boolean);
-      const appIdx = parts.indexOf('app');
-      if (appIdx >= 0 && parts[appIdx + 1]) {
-        return decodeURIComponent(parts[appIdx + 1]);
+      const parent = window.parent !== window ? window.parent : window;
+      // Check both pathname and hash to handle SPA hash-based routing
+      const candidates = [parent.location.pathname, parent.location.hash];
+      for (const source of candidates) {
+        const parts = source.split('/').filter(Boolean);
+        const appIdx = parts.indexOf('app');
+        if (appIdx >= 0 && parts[appIdx + 1]) {
+          const name = decodeURIComponent(parts[appIdx + 1]);
+          console.debug('[SystemLinkContext] detected workspace name:', name, 'from', source);
+          return name;
+        }
       }
     } catch {
       // cross-origin parent — fall through to default
     }
+    console.debug('[SystemLinkContext] workspace name not found in URL, using Default');
     return 'Default';
   }
 
@@ -74,8 +80,14 @@ export class SystemLinkContextService {
       const payload = (await response.json()) as Record<string, unknown>;
       const workspaces = payload['workspaces'];
       if (!Array.isArray(workspaces)) return null;
-      const match = (workspaces as Record<string, unknown>[]).find(w => w['name'] === name);
-      return match ? String(match['id']) : null;
+      // Case-insensitive match so URL capitalisation doesn't matter
+      const lower = name.toLowerCase();
+      const match = (workspaces as Record<string, unknown>[]).find(
+        w => String(w['name']).toLowerCase() === lower,
+      );
+      const id = match ? String(match['id']) : null;
+      console.debug('[SystemLinkContext] workspace ID resolved:', id, 'for name:', name);
+      return id;
     } catch {
       return null;
     }
