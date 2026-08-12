@@ -47,11 +47,18 @@ export class SystemLinkContextService {
   }
 
   private extractWorkspaceName(): string {
-    // Webapp URL path: /webapps/app/{WorkspaceName}/{AppName}/...
-    const parts = window.location.pathname.split('/').filter(Boolean);
-    const appIdx = parts.indexOf('app');
-    if (appIdx >= 0 && parts[appIdx + 1]) {
-      return decodeURIComponent(parts[appIdx + 1]);
+    try {
+      // Workspace name lives in the PARENT page URL: /webapps/app/{WorkspaceName}/{AppName}/
+      const pathname = window.parent !== window
+        ? window.parent.location.pathname
+        : window.location.pathname;
+      const parts = pathname.split('/').filter(Boolean);
+      const appIdx = parts.indexOf('app');
+      if (appIdx >= 0 && parts[appIdx + 1]) {
+        return decodeURIComponent(parts[appIdx + 1]);
+      }
+    } catch {
+      // cross-origin parent — fall through to default
     }
     return 'Default';
   }
