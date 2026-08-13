@@ -75,6 +75,13 @@ interface RoutineStatusCounts {
   unauthorized: boolean;
 }
 
+interface DataTableStats {
+  count: number | null;
+  maxRows: number | null;
+  maxColumns: number | null;
+  unauthorized: boolean;
+}
+
 interface CountProbe {
   label: string;
   key: string;
@@ -86,11 +93,15 @@ interface CountProbe {
 @Injectable({ providedIn: 'root' })
 export class UsageMetricsService {
   private routineStatusCountsPromise: Promise<RoutineStatusCounts | null> | null = null;
+  private dataTableStatsPromise: Promise<DataTableStats | null> | null = null;
+  private systemsSummaryPromise: Promise<SystemsSummaryCounts | null> | null = null;
 
   constructor(private readonly context: SystemLinkContextService) {}
 
   async load(onPartialUpdate?: (metrics: readonly UsageMetric[]) => void): Promise<UsageDashboardModel> {
     this.routineStatusCountsPromise = null;
+    this.dataTableStatsPromise = null;
+    this.systemsSummaryPromise = null;
     const refreshedAt = new Date().toISOString();
     const accumulated: UsageMetric[] = [];
 
@@ -207,6 +218,41 @@ export class UsageMetricsService {
         parser: (payload: unknown) => this.extractCollectionCount(payload, ['tables']),
       },
       {
+        key: 'max-file-size',
+        label: 'Max File Size',
+        detail: 'Largest single file size in File Service.',
+        requests: [],
+      },
+      {
+        key: 'max-data-table-rows',
+        label: 'Max Data Table Rows',
+        detail: 'Largest row count across all data tables.',
+        requests: [],
+      },
+      {
+        key: 'max-data-table-columns',
+        label: 'Max Data Table Columns',
+        detail: 'Largest column count across all data tables.',
+        requests: [],
+      },
+      {
+        key: 'data-spaces',
+        label: 'Data Spaces',
+        detail: 'Total Data Spaces published to the WebApp service.',
+        requests: [
+          {
+            method: 'POST',
+            path: '/niapp/v1/webapps/query?includeTotalCount=true',
+            body: {
+              filter: 'type == "DataSpace"',
+              orderBy: 'updated',
+              orderByDescending: true,
+              take: 1,
+            },
+          },
+        ],
+      },
+      {
         key: 'products',
         label: 'Products',
         detail: 'Total test products in Test Monitor.',
@@ -263,6 +309,18 @@ export class UsageMetricsService {
             path: '/niapm/v1/assets?Take=1&ReturnCount=true',
           },
         ],
+      },
+      {
+        key: 'locations',
+        label: 'Locations',
+        detail: 'Total locations in the Locations service.',
+        requests: [
+          {
+            method: 'GET',
+            path: '/nilocation/v1/locations',
+          },
+        ],
+        parser: (payload: unknown) => this.extractCollectionCount(payload, ['locations']),
       },
       {
         key: 'enabled-routines',
@@ -392,6 +450,12 @@ export class UsageMetricsService {
         parser: (payload: unknown) => this.extractArrayCount(payload),
       },
       {
+        key: 'published-notebooks',
+        label: 'Published Notebooks',
+        detail: 'Total Jupyter notebooks published to the Notebook service.',
+        requests: [],
+      },
+      {
         key: 'tags',
         label: 'Tags',
         detail: 'Total tags in Tag Service.',
@@ -435,7 +499,7 @@ export class UsageMetricsService {
       },
       {
         key: 'package-counts',
-        label: 'Package Counts',
+        label: 'Packages',
         detail: 'Total packages across all package feeds.',
         requests: [
           {
@@ -533,7 +597,22 @@ export class UsageMetricsService {
       },
     ];
 
-    const baseMetricPromises = probes.map(async (probe: CountProbe): Promise<UsageMetric> => {
+    // Some metrics depend on optional services not present on every SystemLink version.
+    const optionalServiceMetrics: ReadonlyArray<{ service: string; keys: readonly string[] }> = [
+      { service: 'DataFrame', keys: ['data-tables', 'max-data-table-rows', 'max-data-table-columns'] },
+      { service: 'Locations', keys: ['locations'] },
+    ];
+    const hiddenKeys = new Set<string>();
+    for (const entry of optionalServiceMetrics) {
+      if (!(await this.context.isServiceAvailable(entry.service))) {
+        entry.keys.forEach(key => hiddenKeys.add(key));
+      }
+    }
+    const activeProbes = hiddenKeys.size === 0
+      ? probes
+      : probes.filter((probe: CountProbe) => !hiddenKeys.has(probe.key));
+
+    const runProbe = async (probe: CountProbe): Promise<UsageMetric> => {
       const outcome = await this.probeCount(probe);
       const attempt = outcome.attempt;
       const status: UsageMetric['status'] = attempt
@@ -552,7 +631,10 @@ export class UsageMetricsService {
       accumulated.push(metric);
       onPartialUpdate?.([...accumulated]);
       return metric;
-    });
+    };
+
+    // Cap concurrency so the initial load doesn't burst past the API rate limit (429s).
+    const baseMetricsPromise = this.mapWithConcurrency(activeProbes, 6, runProbe);
 
     // Run work-item-type metrics concurrently with the base probes
     const workItemTypePromise = this.loadWorkItemTypeMetrics().then(witmMetrics => {
@@ -562,7 +644,7 @@ export class UsageMetricsService {
     });
 
     const [baseMetrics, workItemTypeMetrics] = await Promise.all([
-      Promise.all(baseMetricPromises),
+      baseMetricsPromise,
       workItemTypePromise,
     ]);
 
@@ -855,6 +937,25 @@ export class UsageMetricsService {
     return 0;
   }
 
+  // Runs an async mapper over items with a bounded number of workers in flight.
+  private async mapWithConcurrency<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+    const results: R[] = new Array(items.length);
+    let cursor = 0;
+    const workerCount = Math.max(1, Math.min(limit, items.length));
+    const workers = Array.from({ length: workerCount }, async () => {
+      while (true) {
+        const index = cursor;
+        cursor += 1;
+        if (index >= items.length) {
+          break;
+        }
+        results[index] = await fn(items[index]);
+      }
+    });
+    await Promise.all(workers);
+    return results;
+  }
+
   private async probeCount(probe: CountProbe): Promise<ProbeOutcome> {
     if (
       probe.key === 'systems' ||
@@ -862,7 +963,7 @@ export class UsageMetricsService {
       probe.key === 'disconnected-systems' ||
       probe.key === 'virtual-systems'
     ) {
-      const systemsSummary = await this.fetchSystemsSummaryCounts();
+      const systemsSummary = await this.getSystemsSummaryCounts();
       if (systemsSummary) {
         const total =
           (systemsSummary.connected ?? 0) +
@@ -924,21 +1025,83 @@ export class UsageMetricsService {
     }
 
     if (probe.key === 'data-tables') {
-      const dataTablesCount = await this.countDataTablesViaPagination();
-      if (dataTablesCount !== null) {
+      const stats = await this.getDataTableStats();
+      if (stats && stats.count !== null) {
         return {
           attempt: {
             request: {
-              method: 'GET',
-              path: '/nidataframe/v1/tables (paged)',
+              method: 'POST',
+              path: '/nidataframe/v1/query-tables (scanned)',
             },
-            value: dataTablesCount,
+            value: stats.count,
           },
           unauthorized: false,
         };
       }
 
       // Avoid generic fallback for Data Tables because deep object scanning can return misleading low values.
+      return { attempt: null, unauthorized: stats?.unauthorized ?? false };
+    }
+
+    if (probe.key === 'published-notebooks') {
+      const notebookCount = await this.countPagedCollectionByContinuationToken({
+        path: '/ninotebook/v1/notebook/query',
+        collectionKey: 'notebooks',
+      });
+      if (notebookCount !== null) {
+        return {
+          attempt: {
+            request: {
+              method: 'POST',
+              path: '/ninotebook/v1/notebook/query (paged)',
+            },
+            value: notebookCount,
+          },
+          unauthorized: false,
+        };
+      }
+
+      return { attempt: null, unauthorized: false };
+    }
+
+    if (probe.key === 'max-file-size') {
+      const maxSize = await this.getMaxFileSize();
+      if (maxSize.value !== null) {
+        return {
+          attempt: {
+            request: {
+              method: 'GET',
+              path: '/nifile/v1/service-groups/Default/files?orderBy=size&orderByDescending=true',
+            },
+            value: maxSize.value,
+          },
+          unauthorized: false,
+        };
+      }
+
+      return { attempt: null, unauthorized: maxSize.unauthorized };
+    }
+
+    if (probe.key === 'max-data-table-rows' || probe.key === 'max-data-table-columns') {
+      const stats = await this.getDataTableStats();
+      if (stats) {
+        const value = probe.key === 'max-data-table-rows' ? stats.maxRows : stats.maxColumns;
+        if (value !== null) {
+          return {
+            attempt: {
+              request: {
+                method: 'POST',
+                path: '/nidataframe/v1/query-tables (scanned)',
+              },
+              value,
+            },
+            unauthorized: false,
+          };
+        }
+
+        return { attempt: null, unauthorized: stats.unauthorized };
+      }
+
       return { attempt: null, unauthorized: false };
     }
 
@@ -1053,6 +1216,14 @@ export class UsageMetricsService {
     return { attempt: null, unauthorized: sawUnauthorized };
   }
 
+  // Memoized so the four systems metrics share a single summary request per load.
+  private getSystemsSummaryCounts(): Promise<SystemsSummaryCounts | null> {
+    if (!this.systemsSummaryPromise) {
+      this.systemsSummaryPromise = this.fetchSystemsSummaryCounts();
+    }
+    return this.systemsSummaryPromise;
+  }
+
   private async fetchSystemsSummaryCounts(): Promise<SystemsSummaryCounts | null> {
     try {
       const response = await fetch(
@@ -1092,22 +1263,34 @@ export class UsageMetricsService {
   }
 
   private async tryRequest(request: CountRequest, parser: CountParser): Promise<RequestAttemptResult> {
-    try {
-      const init = this.context.buildRequestInit({ method: request.method });
-      const headers = new Headers(init.headers ?? {});
+    const init = this.context.buildRequestInit({ method: request.method });
+    const headers = new Headers(init.headers ?? {});
+    if (request.method === 'POST') {
+      headers.set('Content-Type', 'application/json');
+    }
+    const requestInit: RequestInit = {
+      ...init,
+      headers,
+      body: request.method === 'POST' ? JSON.stringify(request.body ?? {}) : undefined,
+    };
+    const url = this.context.buildApiUrl(request.path);
 
-      if (request.method === 'POST') {
-        headers.set('Content-Type', 'application/json');
+    // Retry on 429/transient errors with exponential backoff to survive rate limits.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if (attempt > 0) {
+        await new Promise<void>(resolve => setTimeout(resolve, 400 * Math.pow(2, attempt - 1)));
       }
 
-      const response = await fetch(
-        this.context.buildApiUrl(request.path),
-        {
-          ...init,
-          headers,
-          body: request.method === 'POST' ? JSON.stringify(request.body ?? {}) : undefined,
-        },
-      );
+      let response: Response;
+      try {
+        response = await fetch(url, requestInit);
+      } catch {
+        continue;
+      }
+
+      if (response.status === 429) {
+        continue;
+      }
 
       if (!response.ok) {
         return {
@@ -1141,9 +1324,9 @@ export class UsageMetricsService {
       } catch {
         return { value: null, unauthorized: false };
       }
-    } catch {
-      return { value: null, unauthorized: false };
     }
+
+    return { value: null, unauthorized: false };
   }
 
   private parseCountFromHeaders(headers: Headers): number | null {
@@ -1524,110 +1707,136 @@ export class UsageMetricsService {
     return payload.length;
   }
 
-  private async countDataTablesViaPagination(): Promise<number | null> {
-    const byQuery = await this.countDataFrameTablesViaGetTables();
-    const byPostQuery = await this.countDataFrameTablesViaQueryTables();
-
-    if (byQuery === null && byPostQuery === null) {
-      return null;
-    }
-
-    return Math.max(byQuery ?? 0, byPostQuery ?? 0);
-  }
-
-  private async countDataFrameTablesViaGetTables(): Promise<number | null> {
-    const take = 1000;
-    let continuationToken: string | undefined;
-    let total = 0;
-    let page = 0;
-    const maxPages = 500;
-
-    while (page < maxPages) {
+  private async getMaxFileSize(): Promise<{ value: number | null; unauthorized: boolean }> {
+    try {
       const params = new URLSearchParams();
-      params.set('take', String(take));
-      if (continuationToken) {
-        params.set('continuationToken', continuationToken);
-      }
+      params.set('take', '1');
+      params.set('orderBy', 'size');
+      params.set('orderByDescending', 'true');
 
       const response = await fetch(
-        this.context.buildApiUrl('/nidataframe/v1/tables?' + params.toString()),
+        this.context.buildApiUrl('/nifile/v1/service-groups/Default/files?' + params.toString()),
         this.context.buildRequestInit({ method: 'GET' }),
       );
 
       if (!response.ok) {
-        return null;
+        return { value: null, unauthorized: response.status === 401 || response.status === 403 };
       }
 
       const payload = (await response.json()) as unknown;
       if (!payload || typeof payload !== 'object') {
-        return null;
+        return { value: null, unauthorized: false };
       }
 
       const record = payload as Record<string, unknown>;
-      const tables = Array.isArray(record['tables']) ? record['tables'] : [];
-      total += tables.length;
+      const files = Array.isArray(record['availableFiles']) ? record['availableFiles'] : [];
 
-      const tokenValue = record['continuationToken'];
-      continuationToken = typeof tokenValue === 'string' && tokenValue.length > 0 ? tokenValue : undefined;
-      page += 1;
-
-      if (!continuationToken) {
-        return total;
+      if (files.length === 0) {
+        // No files means the maximum size is zero.
+        return { value: 0, unauthorized: false };
       }
-    }
 
-    return total > 0 ? total : null;
+      const first = files[0] as Record<string, unknown>;
+      // size64 holds the accurate value; size is a 32-bit field capped at -1 when too large.
+      const value = this.toNumber(first['size64']) ?? this.toNumber(first['size']);
+      return { value: value ?? null, unauthorized: false };
+    } catch {
+      return { value: null, unauthorized: false };
+    }
   }
 
-  private async countDataFrameTablesViaQueryTables(): Promise<number | null> {
+  private getDataTableStats(): Promise<DataTableStats | null> {
+    if (!this.dataTableStatsPromise) {
+      this.dataTableStatsPromise = this.computeDataTableStats();
+    }
+    return this.dataTableStatsPromise;
+  }
+
+  // Single paginated scan that yields the table count plus max rows/columns.
+  // Projection keeps each row tiny (rowCount + columnCount only).
+  private async computeDataTableStats(): Promise<DataTableStats | null> {
     const take = 1000;
     let continuationToken: string | undefined;
-    let total = 0;
     let page = 0;
     const maxPages = 500;
+    let count = 0;
+    let maxRows: number | null = null;
+    let maxColumns: number | null = null;
+    let sawTable = false;
+    let unauthorized = false;
 
     while (page < maxPages) {
       const body: Record<string, unknown> = {
         take,
+        projection: ['ROW_COUNT', 'COLUMN_COUNT'],
       };
       if (continuationToken) {
         body['continuationToken'] = continuationToken;
       }
 
-      const response = await fetch(
-        this.context.buildApiUrl('/nidataframe/v1/query-tables'),
-        this.context.buildRequestInit({
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(body),
-        }),
-      );
+      let response: Response;
+      try {
+        response = await fetch(
+          this.context.buildApiUrl('/nidataframe/v1/query-tables'),
+          this.context.buildRequestInit({
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          }),
+        );
+      } catch {
+        return sawTable ? { count, maxRows, maxColumns, unauthorized } : null;
+      }
 
       if (!response.ok) {
-        return null;
+        if (response.status === 401 || response.status === 403) {
+          unauthorized = true;
+        }
+        return sawTable
+          ? { count, maxRows, maxColumns, unauthorized }
+          : { count: null, maxRows: null, maxColumns: null, unauthorized };
       }
 
       const payload = (await response.json()) as unknown;
       if (!payload || typeof payload !== 'object') {
-        return null;
+        break;
       }
 
       const record = payload as Record<string, unknown>;
       const tables = Array.isArray(record['tables']) ? record['tables'] : [];
-      total += tables.length;
+      count += tables.length;
+      for (const table of tables) {
+        if (!table || typeof table !== 'object') {
+          continue;
+        }
+        sawTable = true;
+        const tableRecord = table as Record<string, unknown>;
+        const rows = this.toNumber(tableRecord['rowCount']);
+        if (rows !== null) {
+          maxRows = maxRows === null ? rows : Math.max(maxRows, rows);
+        }
+        const columns = this.toNumber(tableRecord['columnCount'])
+          ?? (Array.isArray(tableRecord['columns']) ? tableRecord['columns'].length : null);
+        if (columns !== null) {
+          maxColumns = maxColumns === null ? columns : Math.max(maxColumns, columns);
+        }
+      }
 
       const tokenValue = record['continuationToken'];
       continuationToken = typeof tokenValue === 'string' && tokenValue.length > 0 ? tokenValue : undefined;
       page += 1;
 
       if (!continuationToken) {
-        return total;
+        break;
       }
     }
 
-    return total > 0 ? total : null;
+    // No tables at all means the count and each maximum are zero.
+    if (!sawTable) {
+      return { count: 0, maxRows: 0, maxColumns: 0, unauthorized };
+    }
+
+    return { count, maxRows, maxColumns, unauthorized };
   }
 
   private async countWorkflowsViaPagination(): Promise<number | null> {

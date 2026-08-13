@@ -37,10 +37,8 @@ export class TagStatisticsService {
   async readTagHistory(metricKey: string): Promise<TagHistoryEntry[]> {
     const path = this.tagPath(metricKey);
     const workspaceId = await this.context.resolveWorkspaceId();
-    // Use workspace-scoped URL path when available; fall back to global endpoint
-    const historyPath = workspaceId
-      ? `/nitaghistorian/v2/workspaces/${workspaceId}/tags/query-history`
-      : '/nitaghistorian/v2/tags/query-history';
+    // The Tag Historian API has no workspace URL segment; workspace goes in the body.
+    const historyPath = '/nitaghistorian/v2/tags/query-history';
     const allEntries: TagHistoryEntry[] = [];
     let continuationToken = '';
     const startTime = new Date(Date.now() - 365 * 10 * 24 * 60 * 60 * 1000).toISOString();
@@ -61,6 +59,7 @@ export class TagStatisticsService {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 path,
+                ...(workspaceId ? { workspace: workspaceId } : {}),
                 startTime,
                 endTime,
                 take: 1000,
@@ -111,7 +110,7 @@ export class TagStatisticsService {
               type: 'INT',
               ...(workspaceId ? { workspace: workspaceId } : {}),
               properties: {
-                nitagHistoryTTLDays: '1460',
+                nitagHistoryTTLDays: '365',
                 nitagMaxHistoryCount: '10000',
                 nitagRetention: 'DURATION',
               },

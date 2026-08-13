@@ -65,7 +65,7 @@
         </div>
 
         <nimble-tree-view selection-mode="none" class="overview__tree-view" aria-label="Usage metrics tree">
-          <nimble-tree-item *ngFor="let group of treeNodes" expanded>
+          <nimble-tree-item *ngFor="let group of treeNodes; trackBy: trackByNodeId" expanded>
             <div class="overview__node-grid overview__node-grid--group">
               <span class="overview__metric overview__metric--group">{{ group.metric }}</span>
               <span class="overview__status overview__status--none">-</span>
@@ -75,7 +75,7 @@
             </div>
 
             <nimble-tree-item
-              *ngFor="let metric of group.children"
+              *ngFor="let metric of group.children; trackBy: trackByNodeId"
               [attr.selected]="metric === selectedMetricNode ? true : null"
               (click)="selectMetricRow(metric)"
               (dblclick)="openStatisticsOnDoubleClick(metric)">

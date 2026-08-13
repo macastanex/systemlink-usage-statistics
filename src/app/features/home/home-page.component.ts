@@ -11,6 +11,7 @@ import '@ni/nimble-components/dist/esm/icons/xmark';
 
 import { AppViewStateService } from '../../core/state/app-view-state.service';
 import { CurrentUserService } from '../../core/systemlink/current-user.service';
+import { SystemLinkContextService } from '../../core/systemlink/systemlink-context.service';
 import { TagHistoryEntry, TagStatisticsService } from '../../core/systemlink/tag-statistics.service';
 import {
   UsageDashboardModel,
@@ -70,7 +71,7 @@ export class HomePageComponent implements OnInit {
   private static readonly GROUPS: readonly UsageTreeGroup[] = [
     {
       key: 'assets-systems',
-      label: 'Assets & Systems Management',
+      label: 'Assets and System Management',
       description: 'Asset and system inventory metrics.',
       children: [
         {
@@ -98,6 +99,11 @@ export class HomePageComponent implements OnInit {
           label: 'Virtual Systems',
           fallbackDetail: 'Virtual systems from Systems Management summary.',
         },
+        {
+          key: 'locations',
+          label: 'Locations',
+          fallbackDetail: 'Total locations in the Locations service.',
+        },
       ],
     },
     {
@@ -117,7 +123,7 @@ export class HomePageComponent implements OnInit {
         },
         {
           key: 'package-counts',
-          label: 'Package Counts',
+          label: 'Packages',
           fallbackDetail: 'Total packages available through package feeds.',
         },
       ],
@@ -148,9 +154,29 @@ export class HomePageComponent implements OnInit {
           fallbackDetail: 'Total configured data tables.',
         },
         {
+          key: 'max-data-table-rows',
+          label: 'Max Data Table Rows',
+          fallbackDetail: 'Largest row count across all data tables.',
+        },
+        {
+          key: 'max-data-table-columns',
+          label: 'Max Data Table Columns',
+          fallbackDetail: 'Largest column count across all data tables.',
+        },
+        {
           key: 'files',
           label: 'Files',
           fallbackDetail: 'Total files in File Service.',
+        },
+        {
+          key: 'max-file-size',
+          label: 'Max File Size',
+          fallbackDetail: 'Largest single file size in File Service.',
+        },
+        {
+          key: 'data-spaces',
+          label: 'Data Spaces',
+          fallbackDetail: 'Total Data Spaces published to the WebApp service.',
         },
       ],
     },
@@ -214,6 +240,11 @@ export class HomePageComponent implements OnInit {
           fallbackDetail: 'Total dashboards discoverable through embedded Grafana.',
         },
         {
+          key: 'published-notebooks',
+          label: 'Published Notebooks',
+          fallbackDetail: 'Total Jupyter notebooks published to the Notebook service.',
+        },
+        {
           key: 'enabled-routines',
           label: 'Enabled Routines',
           fallbackDetail: 'Total enabled event-action routines.',
@@ -245,6 +276,7 @@ export class HomePageComponent implements OnInit {
   dailyRates = new Map<string, number | null>();
   dailyRatesLoading = false;
   isPartialLoad = false;
+  private hiddenMetricKeys = new Set<string>();
   private lwChart: null = null; // reserved
   private rateQueue: UsageMetric[] = [];
   private rateQueuedKeys = new Set<string>();
@@ -257,13 +289,14 @@ export class HomePageComponent implements OnInit {
     private readonly dataService: UsageMetricsService,
     private readonly currentUserService: CurrentUserService,
     readonly tagStatisticsService: TagStatisticsService,
+    private readonly context: SystemLinkContextService,
     appViewState: AppViewStateService,
   ) {
     this.state = appViewState.create<UsageDashboardModel>();
   }
 
   ngOnInit(): void {
-    void this.reload();
+    void this.resolveHiddenMetrics().finally(() => void this.reload());
     void this.currentUserService.checkIsSuperUser().then(result => {
       this.isSuperUser = result;
       if (result && this.state.value) {
@@ -271,6 +304,21 @@ export class HomePageComponent implements OnInit {
         this.queueRateLoad(this.state.value.metrics);
       }
     });
+  }
+
+  // DataFrame service is optional; hide Data Table metrics when it isn't registered.
+  private async resolveHiddenMetrics(): Promise<void> {
+    const optionalServiceMetrics: ReadonlyArray<{ service: string; keys: readonly string[] }> = [
+      { service: 'DataFrame', keys: ['data-tables', 'max-data-table-rows', 'max-data-table-columns'] },
+      { service: 'Locations', keys: ['locations'] },
+    ];
+    const hidden = new Set<string>();
+    for (const entry of optionalServiceMetrics) {
+      if (!(await this.context.isServiceAvailable(entry.service))) {
+        entry.keys.forEach(key => hidden.add(key));
+      }
+    }
+    this.hiddenMetricKeys = hidden;
   }
 
   async reload(): Promise<void> {
@@ -355,6 +403,11 @@ export class HomePageComponent implements OnInit {
   selectMetricRow(node: UsageTreeNode): void {
     if (node.children.length > 0) return;
     this.selectedMetricNode = this.selectedMetricNode === node ? null : node;
+  }
+
+  // Keep tree-item DOM stable across partial-load rebuilds so rows don't flicker/jump.
+  trackByNodeId(_index: number, node: UsageTreeNode): string {
+    return node.id;
   }
 
   openStatisticsOnDoubleClick(node: UsageTreeNode): void {
@@ -561,13 +614,38 @@ export class HomePageComponent implements OnInit {
     return {
       id: metric.key,
       metric: metricLabel,
-      count: hasValue ? String(metric.value) : 'N/A',
+      count: hasValue ? this.formatMetricCount(metric.key, metric.value as number) : 'N/A',
       details: metric.detail,
       source: metric.source,
       statusGlyph,
       statusLabel,
       children: [],
     };
+  }
+
+  // File-size metric stores raw bytes; show a human-readable size in the count column.
+  private formatMetricCount(key: string, value: number): string {
+    if (key === 'max-file-size') {
+      return this.formatBytes(value);
+    }
+    return String(value);
+  }
+
+  private formatBytes(bytes: number): string {
+    if (!isFinite(bytes) || bytes < 0) {
+      return String(bytes);
+    }
+    if (bytes < 1024) {
+      return `${bytes} B`;
+    }
+    const units = ['KB', 'MB', 'GB', 'TB', 'PB'];
+    let value = bytes / 1024;
+    let unitIndex = 0;
+    while (value >= 1024 && unitIndex < units.length - 1) {
+      value /= 1024;
+      unitIndex += 1;
+    }
+    return `${Math.round(value * 100) / 100} ${units[unitIndex]}`;
   }
 
   private buildTreeNodes(metrics: readonly UsageMetric[], isPartial = false): readonly UsageTreeNode[] {
@@ -580,6 +658,9 @@ export class HomePageComponent implements OnInit {
     for (const group of HomePageComponent.GROUPS) {
       const children: UsageTreeNode[] = [];
       for (const child of group.children) {
+        if (this.hiddenMetricKeys.has(child.key)) {
+          continue;
+        }
         if (child.key === 'work-item-types-dynamic') {
           if (workItemTypeMetrics.length === 0) {
             children.push({

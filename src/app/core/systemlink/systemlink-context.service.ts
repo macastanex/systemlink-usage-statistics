@@ -9,6 +9,7 @@ export class SystemLinkContextService {
   readonly authMode: AuthMode = 'same-origin';
 
   private workspaceIdCache: Promise<string | null> | null = null;
+  private liveServicesCache: Promise<Set<string> | null> | null = null;
 
   get workspaceName(): string {
     return this.extractWorkspaceName();
@@ -46,6 +47,55 @@ export class SystemLinkContextService {
       p.then(id => { if (id) this.workspaceIdCache = p; });
     }
     return this.workspaceIdCache ?? this.fetchWorkspaceId();
+  }
+
+  // Returns the set of LIVE services from the Service Registry, or null when the registry is unreachable.
+  private getLiveServices(): Promise<Set<string> | null> {
+    if (!this.liveServicesCache) {
+      this.liveServicesCache = this.fetchLiveServices();
+    }
+    return this.liveServicesCache;
+  }
+
+  // Checks the Service Registry for a LIVE service. Assumes available when the registry is unreachable.
+  async isServiceAvailable(serviceName: string): Promise<boolean> {
+    const services = await this.getLiveServices();
+    if (services === null) {
+      return true;
+    }
+    return services.has(serviceName);
+  }
+
+  private async fetchLiveServices(): Promise<Set<string> | null> {
+    try {
+      const response = await fetch(
+        this.buildApiUrl('/niserviceregistry/v1/services'),
+        this.buildRequestInit({ method: 'GET' }),
+      );
+      if (!response.ok) {
+        return null;
+      }
+      const payload = (await response.json()) as Record<string, unknown>;
+      const services = payload['services'];
+      if (!Array.isArray(services)) {
+        return null;
+      }
+      const live = new Set<string>();
+      for (const service of services) {
+        if (!service || typeof service !== 'object') {
+          continue;
+        }
+        const record = service as Record<string, unknown>;
+        const name = typeof record['name'] === 'string' ? record['name'] : null;
+        const status = typeof record['status'] === 'string' ? record['status'] : null;
+        if (name && (status === null || status.toUpperCase() === 'LIVE')) {
+          live.add(name);
+        }
+      }
+      return live;
+    } catch {
+      return null;
+    }
   }
 
   private extractWorkspaceName(): string {
