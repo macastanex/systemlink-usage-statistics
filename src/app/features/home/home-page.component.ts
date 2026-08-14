@@ -411,6 +411,8 @@ export class HomePageComponent implements OnInit {
   }
 
   openStatisticsOnDoubleClick(node: UsageTreeNode): void {
+    // Statistics/history are a super-user feature; regular users only see live counts.
+    if (!this.isSuperUser) return;
     this.selectMetricRow(node);
     this.openStatisticsDialog();
   }
